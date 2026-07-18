@@ -22,6 +22,7 @@ import os
 import time
 import uuid
 import json
+import math
 import hashlib
 import logging
 import asyncio
@@ -533,6 +534,32 @@ rate_limiter = RateLimiter(
 )
 RATE_LIMIT_EXEMPT_PATHS = {"/health", "/docs", "/redoc", "/openapi.json"}
 
+# ==================== JSON SAFETY ====================
+# Strict JSON has no representation for Infinity/NaN, and Starlette's
+# JSONResponse enforces that (allow_nan=False) - so any literal `inf`/`nan`
+# anywhere in a response body crashes the whole request with a 500 instead
+# of just that one field being unusable. This can happen in more than one
+# place (log_loss on a near-perfectly-separable test split, exp() overflow
+# on a large logistic coefficient, zero-variance edge cases in R²/explained
+# variance, degenerate bootstrap resamples, ...) so instead of chasing each
+# individual source, every response is sanitized in one place: any
+# non-finite float becomes `null` rather than crashing the request.
+
+def _json_safe(obj: Any) -> Any:
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
+class SafeJSONResponse(JSONResponse):
+    def render(self, content: Any) -> bytes:
+        return super().render(_json_safe(content))
+
+
 # ==================== APP SETUP ====================
 
 app = FastAPI(
@@ -542,6 +569,7 @@ app = FastAPI(
                  "a fitted-model registry, drift detection, A/B testing, and an async job queue.",
     docs_url="/docs",
     redoc_url="/redoc",
+    default_response_class=SafeJSONResponse,
 )
 
 _origins_env = os.environ.get("ALLOWED_ORIGINS", "").strip()
@@ -1738,7 +1766,7 @@ async def export_data(request: ExportRequest):
         return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                   headers={"Content-Disposition": "attachment; filename=regression_data.xlsx"})
     else:
-        return JSONResponse(content=df.to_dict(orient="records"))
+        return SafeJSONResponse(content=df.to_dict(orient="records"))
 
 
 @app.get("/theory")

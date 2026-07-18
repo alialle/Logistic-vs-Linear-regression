@@ -39,6 +39,25 @@ def multifeature_payload(n=40, **overrides):
     return payload
 
 
+class TestJSONSafety:
+    def test_json_safe_converts_inf_and_nan_to_none(self):
+        from regression_api_v5 import _json_safe
+        assert _json_safe(float("inf")) is None
+        assert _json_safe(float("-inf")) is None
+        assert _json_safe(float("nan")) is None
+        assert _json_safe(1.5) == 1.5
+        assert _json_safe({"a": float("inf"), "b": [1.0, float("nan"), 2.0]}) == {"a": None, "b": [1.0, None, 2.0]}
+
+    def test_fit_survives_near_perfectly_separable_logistic_data(self):
+        # Regression test: near-perfectly-separable classification can push
+        # logistic coefficients large enough that exp(coef) or log_loss
+        # produces a literal inf, which used to crash the whole /fit
+        # response with a 500 (Starlette's JSON encoder rejects Infinity).
+        data = [{"x": float(i), "y": float(i), "label": int(i > 15)} for i in range(30)]
+        r = client.post("/fit", json={"data": data, "regression_type": "all"})
+        assert r.status_code == 200
+
+
 class TestBasics:
     def test_root(self):
         r = client.get("/")
